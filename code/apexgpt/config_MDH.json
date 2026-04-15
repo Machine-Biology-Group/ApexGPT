@@ -1,0 +1,22 @@
+{
+    "model_name_or_path": "./checkpoints_base/",
+    "train_file": "./data/MDH_train.txt",
+    "validation_file": "./data/MDH_test.txt",
+    "tokenizer_name": "./checkpoints/tokenizer.json",
+    "per_device_train_batch_size": 4,
+    "per_device_eval_batch_size": 32,
+    "gradient_accumulation_steps": 1,
+    "max_grad_norm":1,
+    "line_by_line": true,
+    "num_train_epochs": 50,
+    "do_train": true,
+    "do_eval": true,
+    "learning_rate": 1e-5,
+    "max_seq_length": 512,
+    "overwrite_output_dir": true,
+    "output_dir": "./runs/MDH_GPT_lambda10",
+    "evaluation_strategy": "epoch",
+    "save_strategy": "epoch",
+    "gradient_checkpointing": false,
+    "torch_dtype": "float32"
+}
