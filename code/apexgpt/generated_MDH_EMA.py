@@ -2,6 +2,7 @@ import os
 import time
 import random
 import argparse
+from pathlib import Path
 import pandas as pd
 import torch
 from tokenizers import Tokenizer
@@ -40,10 +41,13 @@ def set_seed(seed, deterministic=True):
 # model
 
 def create_model(ckpt, fp16=True):
+    kwargs = {}
     if fp16:
-        return ProGenForCausalLM.from_pretrained(ckpt, revision='float16', torch_dtype=torch.float16, low_cpu_mem_usage=True)
-    else:
-        return ProGenForCausalLM.from_pretrained(ckpt)
+        kwargs.update(revision='float16', torch_dtype=torch.float16)
+    try:
+        return ProGenForCausalLM.from_pretrained(ckpt, low_cpu_mem_usage=True, **kwargs)
+    except ImportError:
+        return ProGenForCausalLM.from_pretrained(ckpt, **kwargs)
 
 
 def create_tokenizer_custom(file):
@@ -76,6 +80,42 @@ def cross_entropy(logits, target, reduction='mean'):
     return torch.nn.functional.cross_entropy(input=logits, target=target, weight=None, size_average=None, reduce=None, reduction=reduction)
 
 
+def str2bool(value):
+    if isinstance(value, bool):
+        return value
+    return str(value).lower() == 'true'
+
+
+def write_sequences(output_dir, filename, sequences):
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / filename
+    with output_path.open('w') as handle:
+        df = pd.DataFrame(sequences, columns=['Sequence'])
+        df.to_csv(handle, index=False)
+    print(f'wrote {len(sequences)} sequences to {output_path}')
+
+
+def limit_frequency_map(freq_map, max_contexts):
+    if max_contexts <= 0 or len(freq_map) <= max_contexts:
+        return freq_map
+    ranked = sorted(freq_map.items(), key=lambda item: (-item[1], item[0]))
+    return dict(ranked[:max_contexts])
+
+
+def resolve_checkpoint_dir(user_value):
+    if user_value:
+        ckpt = Path(user_value).expanduser().resolve()
+    else:
+        ckpt = Path(BASE_DIR) / 'output' / 'MDH_GPT_EMA_10' / 'best_mode_eval'
+    if not ckpt.exists():
+        raise FileNotFoundError(
+            f'Checkpoint directory not found: {ckpt}. '
+            'Download the pretrained ApexGPT models from https://zenodo.org/records/19597375 '
+            'and pass the extracted MDH checkpoint with --checkpoint-dir.'
+        )
+    return str(ckpt)
+
+
 
 ########################################################################
 # main
@@ -92,14 +132,20 @@ def main():
     parser.add_argument('--model', type=str, choices=models, default='progen2-large')
     parser.add_argument('--device', type=str, default='cuda:0')
     parser.add_argument('--rng-seed', type=int, default=38)
-    parser.add_argument('--rng-deterministic', default=True, type=lambda x: (str(x).lower() == 'true'))
+    parser.add_argument('--rng-deterministic', default=True, type=str2bool)
     parser.add_argument('--p', type=float, default=0.9)
     parser.add_argument('--t', type=float, default=0.3)
     parser.add_argument('--max-length', type=int, default=320)
     parser.add_argument('--num-samples', type=int, default=100)
-    parser.add_argument('--fp16', default=True, type=lambda x: (str(x).lower() == 'true'))
+    parser.add_argument('--fp16', default=True, type=str2bool)
     parser.add_argument('--context', type=str, default='2')
-    parser.add_argument('--sanity', default=True, type=lambda x: (str(x).lower() == 'true'))
+    parser.add_argument('--sanity', default=True, type=str2bool)
+    parser.add_argument('--checkpoint-dir', type=str, default=None)
+    parser.add_argument('--output-dir', type=str, default='.')
+    parser.add_argument('--smoke-test', default=False, type=str2bool)
+    parser.add_argument('--smoke-draws-primary', type=int, default=8)
+    parser.add_argument('--smoke-draws-combined', type=int, default=4)
+    parser.add_argument('--smoke-max-contexts', type=int, default=2)
     args = parser.parse_args()
 
 
@@ -111,15 +157,12 @@ def main():
     if not torch.cuda.is_available():
         print('falling back to cpu')
         args.device = 'cpu'
-    #args.device = 'cpu'
     device = torch.device(args.device)
-    #ckpt = f'./checkpoints/{args.model}'
-    ckpt = os.path.join(BASE_DIR, 'output', 'MDH_GPT_EMA_10', 'best_mode_eval')
+    ckpt = resolve_checkpoint_dir(args.checkpoint_dir)
 
     if device.type == 'cpu':
         print('falling back to fp32')
         args.fp16 = False
-    args.fp16 = True
 
     # (3) load
     with print_time('loading parameters'):
@@ -132,7 +175,7 @@ def main():
 
     # (5) sample
     def generater_seq(device,model,tokenizer,context,num_samples,t,p,max_length):
-        with torch.cuda.amp.autocast():
+        with torch.cuda.amp.autocast(enabled=device.type == 'cuda'):
             completions = sample(device=device, model=model, tokenizer=tokenizer, context=context, pad_token_id=tokenizer.encode('<|pad|>').ids[0], num_return_sequences=num_samples, temp=t, top_p=p, max_length=max_length)
         torch.cuda.empty_cache()
         truncations = [truncate(completion, terminals=['1', '2']) for completion in completions]
@@ -150,6 +193,9 @@ def main():
     #loading beigining token
     with open(os.path.join(BASE_DIR, 'MDH_top10_frequency_st.pkl'),'rb') as f:
         AA=pickle.load(f)
+    output_dir = Path(args.output_dir).resolve()
+    primary_draws = args.smoke_draws_primary if args.smoke_test else 4000
+    combined_draws = args.smoke_draws_combined if args.smoke_test else 2000
     
     #Generation        
     with print_time('sampling'):
@@ -160,8 +206,10 @@ def main():
             for t_value in t:
                 args.p = P_value
                 args.t = t_value
-                AA_lst = random.choices(AA['Forward'], k=4000)
+                AA_lst = random.choices(AA['Forward'], k=primary_draws)
                 AA_dict = statistic_num(AA_lst)
+                if args.smoke_test:
+                    AA_dict = limit_frequency_map(AA_dict, args.smoke_max_contexts)
                 print(AA_dict)
                 for aa,num in AA_dict.items():
                     args.context = '1' +aa
@@ -177,9 +225,7 @@ def main():
                         truncations_ = generater_seq(device,model,tokenizer,args.context,args.num_samples,args.t,args.p,args.max_length)
                     truncations = truncations + truncations_
         results = [seq[1:-1] for seq in truncations]
-        with open('MDH_generated_RL_statistic_p_t_1_aa.csv','w') as w:
-            df = pd.DataFrame(results, columns=['Sequence'])
-            df.to_csv(w,index=False)
+        write_sequences(output_dir, 'MDH_generated_RL_statistic_p_t_1_aa.csv', results)
     
     with print_time('sampling'):
         P= [0.95]
@@ -189,8 +235,10 @@ def main():
             for t_value in t:
                 args.p = P_value
                 args.t = t_value
-                AA_lst = random.choices(AA['Reverse'], k=4000)
+                AA_lst = random.choices(AA['Reverse'], k=primary_draws)
                 AA_dict = statistic_num(AA_lst)
+                if args.smoke_test:
+                    AA_dict = limit_frequency_map(AA_dict, args.smoke_max_contexts)
                 for aa,num in AA_dict.items():
                     args.context = '2' +aa
                     args.num_samples = int(num)
@@ -206,9 +254,7 @@ def main():
                     truncations = truncations + truncations_
                     
         results = [seq[-2:0:-1] for seq in truncations]
-        with open('MDH_generated_RL_statistic_p_t_2_aa.csv','w') as w:
-            df = pd.DataFrame(results, columns=['Sequence'])
-            df.to_csv(w,index=False)
+        write_sequences(output_dir, 'MDH_generated_RL_statistic_p_t_2_aa.csv', results)
     with print_time('sampling'):
         P= [0.95]
         t= [0.6]
@@ -218,8 +264,10 @@ def main():
             for t_value in t:
                 args.p = P_value
                 args.t = t_value
-                AA_lst = random.choices(AA['Forward'], k=2000)
+                AA_lst = random.choices(AA['Forward'], k=combined_draws)
                 AA_dict = statistic_num(AA_lst)
+                if args.smoke_test:
+                    AA_dict = limit_frequency_map(AA_dict, args.smoke_max_contexts)
                 for aa,num in AA_dict.items():
                     args.context = '1' +aa
                     args.num_samples = int(num)
@@ -233,8 +281,10 @@ def main():
                         truncations_ = generater_seq(device,model,tokenizer,args.context,args.num_samples,args.t,args.p,args.max_length)
                     truncations = truncations + truncations_
         
-                AA_lst = random.choices(AA['Reverse'], k=2000)
+                AA_lst = random.choices(AA['Reverse'], k=combined_draws)
                 AA_dict = statistic_num(AA_lst)
+                if args.smoke_test:
+                    AA_dict = limit_frequency_map(AA_dict, args.smoke_max_contexts)
                 for aa,num in AA_dict.items():
                     args.context = '2' +aa
                     args.num_samples = int(num)
@@ -252,9 +302,7 @@ def main():
         results_r = [seq[-2:0:-1] for seq in truncations_r]
         results_f = [seq[1:-1] for seq in truncations]
         results = results_r + results_f
-        with open('MDH_generated_RL_statistic_p_t_1_2_aa.csv','w') as w:
-            df = pd.DataFrame(results, columns=['Sequence'])
-            df.to_csv(w,index=False)
+        write_sequences(output_dir, 'MDH_generated_RL_statistic_p_t_1_2_aa.csv', results)
 
 
     '''
