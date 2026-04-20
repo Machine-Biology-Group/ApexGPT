@@ -1,0 +1,39 @@
+{
+  "added_tokens_decoder": {
+    "0": {
+      "content": "<|pad|>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "1": {
+      "content": "<|bos|>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "2": {
+      "content": "<|eos|>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    }
+  },
+  "bos_token": "<|bos|>",
+  "cache_dir": null,
+  "clean_up_tokenization_spaces": true,
+  "eos_token": "<|eos|>",
+  "model_max_length": 1000000000000000019884624838656,
+  "pad_token": "<|pad|>",
+  "revision": "main",
+  "token": null,
+  "tokenizer_class": "PreTrainedTokenizerFast",
+  "trust_remote_code": false,
+  "use_fast": true
+}
