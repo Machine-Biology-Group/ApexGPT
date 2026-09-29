@@ -147,3 +147,9 @@ python main_MDH_EMA.py config_MDH_EMA.json
 - This repository intentionally does not bundle the large pretrained checkpoints
 - The public pretrained model release is hosted on Zenodo rather than in GitLab
 - The included smoke-test outputs are meant to provide a lightweight validation target for reviewers and users
+
+## Reproducing the benchmarking results
+
+See [REPRODUCING.md](REPRODUCING.md) for a step-by-step walkthrough from a
+fresh clone to every metric reported in Fig. 1d and Supplementary Tables 1
+and 2.
